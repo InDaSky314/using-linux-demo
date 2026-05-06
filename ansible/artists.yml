@@ -1,0 +1,87 @@
+---
+# Artists demo: group, users, permission modes, and demo files
+- name: Artists studio setup
+  hosts: canvas
+  become: true
+
+  vars:
+    artists_group: artists
+    artists:
+      - vangogh
+      - picasso
+      - davinci
+      - monet
+      - frida
+      - warhol
+    studio_root: /srv/studio
+
+  tasks:
+    - name: Ensure artists group exists
+      ansible.builtin.group:
+        name: "{{ artists_group }}"
+        state: present
+
+    - name: Create artist user accounts
+      ansible.builtin.user:
+        name: "{{ item }}"
+        group: "{{ artists_group }}"
+        shell: /bin/bash
+        create_home: true
+        state: present
+      loop: "{{ artists }}"
+
+    - name: Create shared studio root (setgid so new files inherit 'artists')
+      ansible.builtin.file:
+        path: "{{ studio_root }}"
+        state: directory
+        owner: root
+        group: "{{ artists_group }}"
+        mode: "2775"
+
+    - name: Create per-artist subdirectories
+      ansible.builtin.file:
+        path: "{{ studio_root }}/{{ item }}"
+        state: directory
+        owner: "{{ item }}"
+        group: "{{ artists_group }}"
+        mode: "0750"
+      loop: "{{ artists }}"
+
+    - name: Create a private sketches file per artist (mode 0600)
+      ansible.builtin.copy:
+        dest: "{{ studio_root }}/{{ item }}/sketches.txt"
+        content: "Private sketches by {{ item }}. Only {{ item }} can read this.\n"
+        owner: "{{ item }}"
+        group: "{{ artists_group }}"
+        mode: "0600"
+      loop: "{{ artists }}"
+
+    - name: Create a public portfolio file per artist (mode 0644)
+      ansible.builtin.copy:
+        dest: "{{ studio_root }}/{{ item }}/portfolio.txt"
+        content: "Public portfolio of {{ item }}. World-readable.\n"
+        owner: "{{ item }}"
+        group: "{{ artists_group }}"
+        mode: "0644"
+      loop: "{{ artists }}"
+
+    - name: Create a shared masterpiece file the whole group can edit (mode 0664)
+      ansible.builtin.copy:
+        dest: "{{ studio_root }}/shared-masterpiece.txt"
+        content: |
+          Collaborative canvas. Any member of the 'artists' group can write here.
+          Add your brushstroke below:
+          ----
+        owner: root
+        group: "{{ artists_group }}"
+        mode: "0664"
+        force: false
+
+    - name: Show resulting layout
+      ansible.builtin.command: ls -lR {{ studio_root }}
+      register: studio_listing
+      changed_when: false
+
+    - name: Print layout
+      ansible.builtin.debug:
+        var: studio_listing.stdout_lines

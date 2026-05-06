@@ -1,0 +1,109 @@
+---
+# Tears down the artists demo on canvas so the main playbook can run live.
+# Toggles:
+#   -e reset_piwigo=true → also wipe the ansible Piwigo install (DB + files + vhost)
+#   -e clear_all=true    → wipe EVERYTHING:
+#                            • ansible side  (artists group, vangogh/etc., /srv/studio)
+#                            • ansible Piwigo
+#                            • manual side   (painters group, rembrandt/etc., /srv/atelier)
+- name: Reset canvas demo state
+  hosts: canvas
+  become: true
+  vars:
+    reset_piwigo: false
+    clear_all: false
+    artists:
+      - vangogh
+      - picasso
+      - davinci
+      - monet
+      - frida
+      - warhol
+    painters:
+      - rembrandt
+      - klimt
+      - dali
+      - kahlo
+      - banksy
+      - okeeffe
+
+  tasks:
+    # ── Ansible side (always) ───────────────────────────────────────────
+    - name: Remove studio tree
+      ansible.builtin.file:
+        path: /srv/studio
+        state: absent
+
+    - name: Remove artist users (and their home dirs)
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: true
+        force: true
+      loop: "{{ artists }}"
+
+    - name: Remove artists group
+      ansible.builtin.group:
+        name: artists
+        state: absent
+
+    # ── Ansible Piwigo (reset_piwigo or clear_all) ──────────────────────
+    - name: Drop Piwigo DB
+      community.mysql.mysql_db:
+        name: piwigo
+        state: absent
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      when: reset_piwigo or clear_all
+
+    - name: Drop Piwigo DB user
+      community.mysql.mysql_user:
+        name: piwigo
+        state: absent
+        host: localhost
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+      when: reset_piwigo or clear_all
+
+    - name: Disable Piwigo Apache site
+      ansible.builtin.command: a2dissite piwigo.conf
+      args:
+        removes: /etc/apache2/sites-enabled/piwigo.conf
+      when: reset_piwigo or clear_all
+
+    - name: Remove Piwigo files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/www/piwigo
+        - /etc/apache2/sites-available/piwigo.conf
+        - /tmp/piwigo.zip
+      when: reset_piwigo or clear_all
+
+    # ── Manual side (clear_all only) ────────────────────────────────────
+    - name: Remove atelier tree
+      ansible.builtin.file:
+        path: /srv/atelier
+        state: absent
+      when: clear_all
+
+    - name: Remove painter users (and their home dirs)
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+        remove: true
+        force: true
+      loop: "{{ painters }}"
+      when: clear_all
+
+    - name: Remove painters group
+      ansible.builtin.group:
+        name: painters
+        state: absent
+      when: clear_all
+
+    # ── Reload Apache (if Piwigo bits changed) ──────────────────────────
+    - name: Reload Apache
+      ansible.builtin.service:
+        name: apache2
+        state: reloaded
+      when: reset_piwigo or clear_all

@@ -1,0 +1,152 @@
+---
+# Install Piwigo (photo gallery) on canvas
+- name: Deploy Piwigo on canvas
+  hosts: canvas
+  become: true
+
+  vars:
+    piwigo_db_name: piwigo
+    piwigo_db_user: piwigo
+    piwigo_db_password: "BrushAndCanvas!2026"
+    piwigo_webroot: /var/www/piwigo
+    piwigo_download_url: "https://piwigo.org/download/dlcounter.php?code=latest"
+
+  tasks:
+    - name: Install Apache, PHP, MariaDB, and required modules
+      ansible.builtin.apt:
+        name:
+          - apache2
+          - mariadb-server
+          - php
+          - libapache2-mod-php
+          - php-mysql
+          - php-gd
+          - php-cli
+          - php-mbstring
+          - php-xml
+          - php-zip
+          - php-curl
+          - python3-pymysql
+          - unzip
+        state: present
+        update_cache: true
+
+    - name: Ensure MariaDB is running
+      ansible.builtin.service:
+        name: mariadb
+        state: started
+        enabled: true
+
+    - name: Create Piwigo database
+      community.mysql.mysql_db:
+        name: "{{ piwigo_db_name }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Create Piwigo DB user
+      community.mysql.mysql_user:
+        name: "{{ piwigo_db_user }}"
+        password: "{{ piwigo_db_password }}"
+        priv: "{{ piwigo_db_name }}.*:ALL"
+        host: localhost
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Create webroot
+      ansible.builtin.file:
+        path: "{{ piwigo_webroot }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Check if Piwigo already installed
+      ansible.builtin.stat:
+        path: "{{ piwigo_webroot }}/index.php"
+      register: piwigo_index
+
+    - name: Download Piwigo zip
+      ansible.builtin.get_url:
+        url: "{{ piwigo_download_url }}"
+        dest: /tmp/piwigo.zip
+        mode: "0644"
+      when: not piwigo_index.stat.exists
+
+    - name: Extract Piwigo
+      ansible.builtin.unarchive:
+        src: /tmp/piwigo.zip
+        dest: /var/www/
+        remote_src: true
+        owner: www-data
+        group: www-data
+        creates: "{{ piwigo_webroot }}/index.php"
+
+    - name: Ensure Piwigo files are owned by www-data
+      ansible.builtin.file:
+        path: "{{ piwigo_webroot }}"
+        state: directory
+        owner: www-data
+        group: www-data
+        recurse: true
+
+    - name: Deploy Piwigo Apache vhost
+      ansible.builtin.copy:
+        dest: /etc/apache2/sites-available/piwigo.conf
+        content: |
+          <VirtualHost *:80>
+              ServerName canvas
+              DocumentRoot {{ piwigo_webroot }}
+
+              <Directory {{ piwigo_webroot }}>
+                  Options -Indexes +FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+
+              ErrorLog ${APACHE_LOG_DIR}/piwigo_error.log
+              CustomLog ${APACHE_LOG_DIR}/piwigo_access.log combined
+          </VirtualHost>
+        mode: "0644"
+      notify: reload apache
+
+    - name: Disable default Apache site
+      ansible.builtin.command: a2dissite 000-default.conf
+      args:
+        removes: /etc/apache2/sites-enabled/000-default.conf
+      notify: reload apache
+
+    - name: Enable Piwigo site
+      ansible.builtin.command: a2ensite piwigo.conf
+      args:
+        creates: /etc/apache2/sites-enabled/piwigo.conf
+      notify: reload apache
+
+    - name: Enable mod_rewrite
+      community.general.apache2_module:
+        name: rewrite
+        state: present
+      notify: reload apache
+
+    - name: Ensure Apache is running
+      ansible.builtin.service:
+        name: apache2
+        state: started
+        enabled: true
+
+    - name: Print web installer URL
+      ansible.builtin.debug:
+        msg: |
+          Piwigo files deployed. Finish setup in your browser:
+            http://192.168.50.26/install.php
+
+          Database settings to enter on the web installer:
+            Host:     localhost
+            User:     {{ piwigo_db_user }}
+            Password: {{ piwigo_db_password }}
+            Database: {{ piwigo_db_name }}
+
+  handlers:
+    - name: reload apache
+      ansible.builtin.service:
+        name: apache2
+        state: reloaded
